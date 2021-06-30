@@ -3,6 +3,7 @@ package vault
 import (
 	"fmt"
 	gopath "path"
+	"strings"
 
 	"github.com/hashicorp/vault/api"
 	log "github.com/sirupsen/logrus"
@@ -25,12 +26,25 @@ func (c *Client) readRecurse(secrets map[string]interface{}, path string) error 
 	if err == nil {
 		secrets[path] = data
 	} else {
-		paths, err := c.getSecretPaths(path)
+		paths, _ := c.getSecretPaths(path)
+
 		for _, key := range paths {
 			newPath := gopath.Join(path, key.(string))
-			err = c.readRecurse(secrets, newPath)
-			if err != nil {
-				return err
+
+			// if key ends with '/' means its not a secret
+			if strings.HasSuffix(key.(string), "/") {
+				err = c.readRecurse(secrets, newPath+"/")
+
+				if err != nil {
+					return err
+				}
+				// if key does not end with '/', it means its a secret
+			} else {
+				err = c.readRecurse(secrets, newPath)
+
+				if err != nil {
+					secrets[path] = data
+				}
 			}
 		}
 	}
@@ -40,19 +54,26 @@ func (c *Client) readRecurse(secrets map[string]interface{}, path string) error 
 // getSecretData returns an error when underlying Read fails or if the path
 // doesn't contain secrets. Otherwise a map of key/value pairs is returned.
 func (c *Client) getSecretData(path string) (map[string]interface{}, error) {
-	data, err := c.Read(path)
-	if err != nil {
-		log.Fatal(err)
-		return map[string]interface{}{}, err
+	// if path does not end with '/', so retrieve the secret data
+	if !strings.HasSuffix(path, "/") {
+		data, err := c.Read(path)
+
+		if err != nil {
+			log.Fatal(err)
+			return map[string]interface{}{}, err
+		}
+		if data == nil || c.ExtractData(data.Data) == nil {
+			return map[string]interface{}{}, fmt.Errorf("no secret data")
+		}
+		secrets := make(map[string]interface{})
+		for key, val := range c.ExtractData(data.Data) {
+			secrets[key] = val
+		}
+		return secrets, nil
+		// if path ends with '/', so the path its not a secret
+	} else {
+		return map[string]interface{}{}, fmt.Errorf("path is not a secret")
 	}
-	if data == nil || c.ExtractData(data.Data) == nil {
-		return map[string]interface{}{}, fmt.Errorf("no secret data")
-	}
-	secrets := make(map[string]interface{})
-	for key, val := range c.ExtractData(data.Data) {
-		secrets[key] = val
-	}
-	return secrets, nil
 }
 
 // getSecretPaths returns a list of paths directly under the provided path.
